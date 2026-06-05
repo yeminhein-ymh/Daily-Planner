@@ -613,12 +613,67 @@ def render_stats() -> None:
     state["history"][today_key()] = daily_summary(state)
     save_state()
     st.subheader("Progress statistics")
-    for day, row in sorted(state["history"].items(), reverse=True):
-        st.markdown(
-            f"- **{day}** · {row.get('done_total', 0)}/{row.get('item_total', 0)} done "
-            f"({row.get('percent', 0)}%) · Tasks {row.get('tasks_done', 0)}/{row.get('tasks_total', 0)} "
-            f"· Habits {row.get('habits_done', 0)}/{row.get('habits_total', 0)}"
+    st.caption("Target is the number of tasks and habits planned for the day. Achievement is what you completed.")
+
+    history_rows = []
+    for day, row in sorted(state["history"].items()):
+        target = row.get("item_total", 0)
+        achievement = row.get("done_total", 0)
+        history_rows.append(
+            {
+                "Date": day,
+                "Target": target,
+                "Achievement": achievement,
+                "Completion %": row.get("percent", round((achievement / target) * 100) if target else 0),
+                "Tasks Done": row.get("tasks_done", 0),
+                "Tasks Target": row.get("tasks_total", 0),
+                "Habits Done": row.get("habits_done", 0),
+                "Habits Target": row.get("habits_total", 0),
+            }
         )
+
+    if not history_rows:
+        st.info("No progress history yet. Complete a task or habit to start the graph.")
+        return
+
+    latest = history_rows[-1]
+    average_completion = round(sum(row["Completion %"] for row in history_rows) / len(history_rows))
+    cols = st.columns(4)
+    cols[0].metric("Today achievement", f"{latest['Achievement']}/{latest['Target']}")
+    cols[1].metric("Today completion", f"{latest['Completion %']}%")
+    cols[2].metric("Average completion", f"{average_completion}%")
+    cols[3].metric("Days recorded", len(history_rows))
+
+    st.write("")
+    chart_rows = [
+        {"Date": row["Date"], "Metric": "Target", "Value": row["Target"]}
+        for row in history_rows
+    ] + [
+        {"Date": row["Date"], "Metric": "Achievement", "Value": row["Achievement"]}
+        for row in history_rows
+    ]
+
+    st.markdown("**Target vs achievement**")
+    st.bar_chart(chart_rows, x="Date", y="Value", color="Metric", use_container_width=True)
+
+    st.markdown("**Completion trend**")
+    st.line_chart(history_rows, x="Date", y="Completion %", use_container_width=True)
+
+    st.markdown("**Tasks and habits achievement**")
+    category_rows = []
+    for row in history_rows:
+        category_rows.extend(
+            [
+                {"Date": row["Date"], "Metric": "Tasks Done", "Value": row["Tasks Done"]},
+                {"Date": row["Date"], "Metric": "Tasks Target", "Value": row["Tasks Target"]},
+                {"Date": row["Date"], "Metric": "Habits Done", "Value": row["Habits Done"]},
+                {"Date": row["Date"], "Metric": "Habits Target", "Value": row["Habits Target"]},
+            ]
+        )
+    st.bar_chart(category_rows, x="Date", y="Value", color="Metric", use_container_width=True)
+
+    with st.expander("Daily records"):
+        st.dataframe(history_rows, use_container_width=True, hide_index=True)
 
 
 def render_calendar() -> None:
