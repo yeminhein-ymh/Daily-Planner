@@ -333,8 +333,8 @@ def render_header() -> None:
         f"""
         <div class="hero">
             <div>
-                <div class="hero-title">Plan the day. Build the habit. Finish the goal.</div>
-                <div class="muted">A Done-inspired planner for tasks, habits, goals, notes, and daily progress.</div>
+                <div class="hero-title">Goals Planner</div>
+                <div class="muted">Plan tasks, build habits, track goals, and record daily progress.</div>
             </div>
             <div class="muted">
                 Storage: <strong>{st.session_state.get("storage_backend", "Local JSON")}</strong><br>
