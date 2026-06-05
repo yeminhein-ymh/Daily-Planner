@@ -15,7 +15,7 @@ except ImportError:
     Credentials = None
 
 
-APP_TITLE = "Done-Style Goal Planner"
+APP_TITLE = "Goals Planner"
 LOCAL_FILE = Path(__file__).with_name("done_app_state.json")
 SHEET_TAB = "done_app_state"
 
