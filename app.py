@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from urllib.parse import quote_plus
 from uuid import uuid4
 
 import streamlit as st
@@ -18,6 +19,7 @@ except ImportError:
 APP_TITLE = "Goals Planner"
 LOCAL_FILE = Path(__file__).with_name("done_app_state.json")
 SHEET_TAB = "done_app_state"
+GOOGLE_CALENDAR_URL = "https://calendar.google.com/calendar/u/0/r"
 
 
 def today_key() -> str:
@@ -250,6 +252,69 @@ def streak_count(item: dict) -> int:
     return streak
 
 
+def parse_task_time(value: str | None) -> time:
+    if not value:
+        return time(20, 30)
+    clean = value.strip().upper().replace(".", "")
+    for fmt in ("%I:%M %p", "%I %p", "%H:%M"):
+        try:
+            return datetime.strptime(clean, fmt).time()
+        except ValueError:
+            continue
+    return time(20, 30)
+
+
+def google_calendar_event_url(title: str, event_date: date, start_value: str | None, details: str = "") -> str:
+    start_time = parse_task_time(start_value)
+    start_dt = datetime.combine(event_date, start_time)
+    end_dt = start_dt + timedelta(minutes=60)
+    dates = f"{start_dt.strftime('%Y%m%dT%H%M%S')}/{end_dt.strftime('%Y%m%dT%H%M%S')}"
+    return (
+        "https://calendar.google.com/calendar/render?action=TEMPLATE"
+        f"&text={quote_plus(title)}"
+        f"&dates={dates}"
+        f"&details={quote_plus(details)}"
+    )
+
+
+def week_dates(anchor: date) -> list[date]:
+    monday = anchor - timedelta(days=anchor.weekday())
+    return [monday + timedelta(days=index) for index in range(7)]
+
+
+def planned_items_for_day(state: dict, day: date) -> list[dict]:
+    weekday = day.weekday()
+    items = []
+    for task in state["tasks"]:
+        items.append(
+            {
+                "type": "Task",
+                "title": task["title"],
+                "goal_id": task.get("goal_id"),
+                "time": task.get("time") or "8:30 PM",
+                "note": task.get("note", ""),
+                "done": day.isoformat() in task.get("done_dates", []),
+                "url": google_calendar_event_url(task["title"], day, task.get("time"), task.get("note", "")),
+            }
+        )
+    for habit in state["habits"]:
+        cadence = habit.get("cadence", "Daily")
+        should_show = cadence == "Daily" or (cadence == "Weekdays" and weekday < 5) or cadence in {"Weekly", "Monthly"}
+        if should_show:
+            items.append(
+                {
+                    "type": "Habit",
+                    "title": habit["title"],
+                    "goal_id": habit.get("goal_id"),
+                    "time": "6:00 AM" if "exercise" in habit["title"].lower() else "8:30 PM",
+                    "note": f"{cadence} habit",
+                    "done": day.isoformat() in habit.get("done_dates", []),
+                    "url": google_calendar_event_url(habit["title"], day, "6:00 AM" if "exercise" in habit["title"].lower() else "8:30 PM", f"{cadence} habit"),
+                }
+            )
+    return sorted(items, key=lambda item: parse_task_time(item["time"]))
+
+
 def inject_css() -> None:
     st.markdown(
         """
@@ -346,7 +411,7 @@ def render_header() -> None:
     )
     if st.session_state.get("storage_error"):
         st.warning(st.session_state["storage_error"])
-    views = ["Today", "Tasks", "Habits", "Goals", "Stats", "Settings"]
+    views = ["Today", "Calendar", "Tasks", "Habits", "Goals", "Stats", "Settings"]
     st.session_state["view"] = st.segmented_control(
         "View",
         views,
@@ -556,6 +621,46 @@ def render_stats() -> None:
         )
 
 
+def render_calendar() -> None:
+    state = st.session_state["app_state"]
+    goals = goal_map(state)
+    st.subheader("Calendar")
+    st.caption("View your planned tasks and habits by week, then open or add items to Google Calendar.")
+
+    top_cols = st.columns([0.45, 0.25, 0.3])
+    selected_day = top_cols[0].date_input("Week of", value=date.today())
+    top_cols[1].link_button("Open Google Calendar", GOOGLE_CALENDAR_URL, use_container_width=True)
+    top_cols[2].caption("Links create 1-hour Google Calendar events using each item's planned time.")
+
+    st.write("")
+    for day in week_dates(selected_day):
+        day_items = planned_items_for_day(state, day)
+        with st.expander(f"{day.strftime('%A, %d %b')} · {len(day_items)} items", expanded=(day == date.today())):
+            if not day_items:
+                st.caption("No items planned.")
+            for item in day_items:
+                goal = goals.get(item.get("goal_id"), {"name": "No goal", "color": "#999"})
+                status = "Done" if item["done"] else "Planned"
+                cols = st.columns([0.12, 0.58, 0.15, 0.15])
+                cols[0].markdown(f"**{item['time']}**")
+                cols[1].markdown(
+                    f"""
+                    <div>
+                        <strong>{item['title']}</strong><br>
+                        <span class="pill">{item['type']}</span>
+                        <span class="pill"><span class="goal-dot" style="background:{goal['color']};"></span>{goal['name']}</span>
+                        <span class="pill">{status}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                cols[2].link_button("Add event", item["url"], use_container_width=True)
+                if day == date.today():
+                    cols[3].caption("Track in Today")
+                else:
+                    cols[3].caption(day.strftime("%a"))
+
+
 def render_settings() -> None:
     state = st.session_state["app_state"]
     st.subheader("Settings & backup")
@@ -586,6 +691,8 @@ def main() -> None:
     view = st.session_state["view"]
     if view == "Today":
         render_today()
+    elif view == "Calendar":
+        render_calendar()
     elif view == "Tasks":
         render_tasks()
     elif view == "Habits":
