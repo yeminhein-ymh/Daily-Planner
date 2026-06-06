@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -21,6 +22,7 @@ APP_TITLE = "Goals Planner"
 LOCAL_FILE = Path(__file__).with_name("done_app_state.json")
 SHEET_TAB = "done_app_state"
 GOOGLE_CALENDAR_URL = "https://calendar.google.com/calendar/u/0/r"
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def today_key() -> str:
@@ -29,6 +31,23 @@ def today_key() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:10]}"
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def is_valid_email(email: str) -> bool:
+    return bool(EMAIL_PATTERN.match(normalize_email(email)))
+
+
+def user_key(email: str | None = None) -> str:
+    email = normalize_email(email or st.session_state.get("user_email", "guest@example.com"))
+    return "user_" + re.sub(r"[^a-z0-9]+", "_", email).strip("_")
+
+
+def local_file_for_user(email: str | None = None) -> Path:
+    return Path(__file__).with_name(f"done_app_state_{user_key(email)}.json")
 
 
 def default_state() -> dict:
@@ -136,8 +155,9 @@ def load_from_sheet() -> dict | None:
     if worksheet is None:
         return None
     rows = worksheet.get_all_records()
+    current_key = user_key()
     for row in rows:
-        if row.get("key") == "app_state" and row.get("payload_json"):
+        if row.get("key") == current_key and row.get("payload_json"):
             return merge_state(json.loads(row["payload_json"]))
     return None
 
@@ -147,13 +167,17 @@ def save_to_sheet(state: dict) -> bool:
     if worksheet is None:
         return False
     state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    state["user_email"] = st.session_state.get("user_email", "")
+    rows = worksheet.get_all_records()
+    existing = [row for row in rows if row.get("key") != user_key()]
+    output_rows = [["key", "payload_json", "updated_at"]]
+    for row in existing:
+        output_rows.append([row.get("key", ""), row.get("payload_json", ""), row.get("updated_at", "")])
+    output_rows.append([user_key(), json.dumps(state, ensure_ascii=False), state["updated_at"]])
     worksheet.clear()
     worksheet.update(
-        "A1:C2",
-        [
-            ["key", "payload_json", "updated_at"],
-            ["app_state", json.dumps(state, ensure_ascii=False), state["updated_at"]],
-        ],
+        "A1",
+        output_rows,
     )
     return True
 
@@ -176,9 +200,10 @@ def load_state() -> tuple[dict, str, str]:
     else:
         sheet_error = ""
 
-    if LOCAL_FILE.exists():
+    user_local_file = local_file_for_user()
+    if user_local_file.exists():
         try:
-            return merge_state(json.loads(LOCAL_FILE.read_text(encoding="utf-8"))), "Local JSON", sheet_error
+            return merge_state(json.loads(user_local_file.read_text(encoding="utf-8"))), "Local JSON", sheet_error
         except (OSError, json.JSONDecodeError) as exc:
             return default_state(), "Local JSON", f"Local save could not be read: {exc}"
     return default_state(), "Local JSON", sheet_error
@@ -198,7 +223,8 @@ def save_state() -> None:
         st.session_state["storage_error"] = f"Google Sheets save failed: {exc}"
 
     try:
-        LOCAL_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        state["user_email"] = st.session_state.get("user_email", "")
+        local_file_for_user().write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
         st.session_state["storage_backend"] = "Local JSON"
         st.session_state["last_saved"] = datetime.now().strftime("%d %b %Y, %I:%M %p")
     except OSError as exc:
@@ -515,13 +541,44 @@ def inject_css() -> None:
 
 
 def init_state() -> None:
-    if "app_state" not in st.session_state:
+    if not st.session_state.get("user_email"):
+        return
+    if st.session_state.get("loaded_user_email") != st.session_state.get("user_email"):
         state, backend, error = load_state()
         st.session_state["app_state"] = state
         st.session_state["storage_backend"] = backend
         st.session_state["storage_error"] = error
         st.session_state["last_saved"] = state.get("updated_at", "Not saved yet")
+        st.session_state["loaded_user_email"] = st.session_state["user_email"]
     st.session_state.setdefault("view", "Today")
+
+
+def render_register() -> None:
+    inject_css()
+    st.markdown(
+        """
+        <div class="hero">
+            <div>
+                <div class="hero-title">Goals Planner</div>
+                <div class="muted">Register or sign in with your email to load your personal tasks, habits, goals, notes, and stats.</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.form("email_register"):
+        email = st.text_input("Email", placeholder="you@example.com")
+        submitted = st.form_submit_button("Continue", use_container_width=True)
+        if submitted:
+            clean_email = normalize_email(email)
+            if not is_valid_email(clean_email):
+                st.error("Please enter a valid email address.")
+            else:
+                st.session_state["user_email"] = clean_email
+                st.session_state.pop("app_state", None)
+                st.session_state.pop("loaded_user_email", None)
+                st.rerun()
+    st.caption("This separates each user's saved data by email. It is not password authentication.")
 
 
 def render_header() -> None:
@@ -536,6 +593,7 @@ def render_header() -> None:
             </div>
             <div class="muted">
                 Storage: <strong>{st.session_state.get("storage_backend", "Local JSON")}</strong><br>
+                User: <strong>{st.session_state.get("user_email", "")}</strong><br>
                 Today: <strong>{summary["done_total"]}/{summary["item_total"]}</strong> done
             </div>
         </div>
@@ -897,6 +955,7 @@ def render_settings() -> None:
     st.subheader("Settings & backup")
     st.info(
         f"Storage backend: {st.session_state.get('storage_backend', 'Local JSON')}\n\n"
+        f"User: {st.session_state.get('user_email', '')}\n\n"
         f"Last saved: {st.session_state.get('last_saved', 'Not saved yet')}"
     )
     if st.session_state.get("storage_error"):
@@ -912,10 +971,17 @@ def render_settings() -> None:
         save_state()
         st.success("Saved.")
         st.rerun()
+    if st.button("Sign out", use_container_width=True):
+        for key in ["user_email", "loaded_user_email", "app_state", "view"]:
+            st.session_state.pop(key, None)
+        st.rerun()
 
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="✅", layout="wide")
+    if not st.session_state.get("user_email"):
+        render_register()
+        return
     init_state()
     inject_css()
     render_header()
