@@ -95,6 +95,7 @@ def default_state() -> dict:
         ],
         "daily_notes": {},
         "history": {},
+        "period_records": {"daily": [], "monthly": [], "yearly": []},
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -158,7 +159,7 @@ def save_to_sheet(state: dict) -> bool:
 
 def merge_state(saved: dict) -> dict:
     state = default_state()
-    for key in ["goals", "tasks", "habits", "daily_notes", "history", "updated_at"]:
+    for key in ["goals", "tasks", "habits", "daily_notes", "history", "period_records", "updated_at"]:
         if key in saved:
             state[key] = saved[key]
     return state
@@ -185,6 +186,7 @@ def load_state() -> tuple[dict, str, str]:
 def save_state() -> None:
     state = st.session_state["app_state"]
     state["history"][today_key()] = daily_summary(state)
+    update_period_records(state)
     try:
         if save_to_sheet(state):
             st.session_state["storage_backend"] = "Google Sheets"
@@ -224,13 +226,14 @@ def set_done_today(collection: str, item_id: str, done: bool) -> None:
     save_state()
 
 
-def daily_summary(state: dict) -> dict:
-    tasks_done = sum(1 for task in state["tasks"] if today_key() in task.get("done_dates", []))
-    habits_done = sum(1 for habit in state["habits"] if today_key() in habit.get("done_dates", []))
+def daily_summary_for_date(state: dict, summary_date: date) -> dict:
+    day = summary_date.isoformat()
+    tasks_done = sum(1 for task in state["tasks"] if day in task.get("done_dates", []))
+    habits_done = sum(1 for habit in state["habits"] if day in habit.get("done_dates", []))
     total = len(state["tasks"]) + len(state["habits"])
     done = tasks_done + habits_done
     return {
-        "date": today_key(),
+        "date": day,
         "tasks_done": tasks_done,
         "tasks_total": len(state["tasks"]),
         "habits_done": habits_done,
@@ -242,6 +245,48 @@ def daily_summary(state: dict) -> dict:
     }
 
 
+def daily_summary(state: dict) -> dict:
+    return daily_summary_for_date(state, date.today())
+
+
+def all_record_dates(state: dict) -> list[str]:
+    dates = set(state.get("history", {}).keys())
+    dates.add(today_key())
+    dates.add((date.today() - timedelta(days=1)).isoformat())
+    dates.update(state.get("daily_notes", {}).keys())
+    for task in state.get("tasks", []):
+        dates.update(task.get("done_dates", []))
+    for habit in state.get("habits", []):
+        dates.update(habit.get("done_dates", []))
+    return sorted(day for day in dates if day)
+
+
+def history_rows_from_state(state: dict) -> list[dict]:
+    rows = []
+    for day in all_record_dates(state):
+        try:
+            computed = daily_summary_for_date(state, datetime.strptime(day, "%Y-%m-%d").date())
+        except ValueError:
+            continue
+        saved = state.get("history", {}).get(day, {})
+        target = saved.get("item_total", computed["item_total"])
+        achievement = computed["done_total"] if computed["done_total"] or day == today_key() else saved.get("done_total", 0)
+        rows.append(
+            {
+                "Date": day,
+                "Target": target,
+                "Achievement": achievement,
+                "Completion %": round((achievement / target) * 100) if target else 0,
+                "Tasks Done": computed["tasks_done"] if computed["tasks_done"] or day == today_key() else saved.get("tasks_done", 0),
+                "Tasks Target": saved.get("tasks_total", computed["tasks_total"]),
+                "Habits Done": computed["habits_done"] if computed["habits_done"] or day == today_key() else saved.get("habits_done", 0),
+                "Habits Target": saved.get("habits_total", computed["habits_total"]),
+                "Daily Note": state.get("daily_notes", {}).get(day, ""),
+            }
+        )
+    return rows
+
+
 def aggregate_period(rows: list[dict], period: str) -> list[dict]:
     grouped: dict[str, dict] = {}
     for row in rows:
@@ -250,9 +295,12 @@ def aggregate_period(rows: list[dict], period: str) -> list[dict]:
             year, week, _ = row_date.isocalendar()
             key = f"{year}-W{week:02d}"
             label = f"Week {week}, {year}"
-        else:
+        elif period == "month":
             key = row_date.strftime("%Y-%m")
             label = row_date.strftime("%B %Y")
+        else:
+            key = row_date.strftime("%Y")
+            label = row_date.strftime("%Y")
 
         grouped.setdefault(
             key,
@@ -282,6 +330,15 @@ def aggregate_period(rows: list[dict], period: str) -> list[dict]:
         item["Completion %"] = round((item["Achievement"] / target) * 100) if target else 0
         output.append(item)
     return output
+
+
+def update_period_records(state: dict) -> None:
+    daily_rows = history_rows_from_state(state)
+    state["period_records"] = {
+        "daily": daily_rows,
+        "monthly": aggregate_period(daily_rows, "month"),
+        "yearly": aggregate_period(daily_rows, "year"),
+    }
 
 
 def note_history_rows(state: dict) -> list[dict]:
@@ -661,41 +718,33 @@ def render_goals() -> None:
 def render_stats() -> None:
     state = st.session_state["app_state"]
     state["history"][today_key()] = daily_summary(state)
+    update_period_records(state)
     save_state()
     st.subheader("Progress statistics")
     st.caption("Target is planned tasks plus habits. Achievement is what you completed.")
 
-    history_rows = []
-    for day, row in sorted(state["history"].items()):
-        target = row.get("item_total", 0)
-        achievement = row.get("done_total", 0)
-        history_rows.append(
-            {
-                "Date": day,
-                "Target": target,
-                "Achievement": achievement,
-                "Completion %": row.get("percent", round((achievement / target) * 100) if target else 0),
-                "Tasks Done": row.get("tasks_done", 0),
-                "Tasks Target": row.get("tasks_total", 0),
-                "Habits Done": row.get("habits_done", 0),
-                "Habits Target": row.get("habits_total", 0),
-            }
-        )
+    history_rows = state.get("period_records", {}).get("daily") or history_rows_from_state(state)
 
     if not history_rows:
         st.info("No progress history yet. Complete a task or habit to start the graph.")
         return
 
     latest = history_rows[-1]
+    yesterday_key = (date.today() - timedelta(days=1)).isoformat()
+    yesterday = next((row for row in history_rows if row["Date"] == yesterday_key), None)
     average_completion = round(sum(row["Completion %"] for row in history_rows) / len(history_rows))
     cols = st.columns(4)
     cols[0].metric("Today achievement", f"{latest['Achievement']}/{latest['Target']}")
     cols[1].metric("Today completion", f"{latest['Completion %']}%")
-    cols[2].metric("Average completion", f"{average_completion}%")
+    if yesterday:
+        cols[2].metric("Yesterday achievement", f"{yesterday['Achievement']}/{yesterday['Target']}", f"{yesterday['Completion %']}%")
+    else:
+        cols[2].metric("Yesterday achievement", "No record")
     cols[3].metric("Days recorded", len(history_rows))
+    st.caption(f"Average completion: {average_completion}% · Records are saved as daily, monthly, and yearly summaries.")
 
     st.write("")
-    daily_tab, weekly_tab, monthly_tab, notes_tab = st.tabs(["Daily", "Weekly", "Monthly", "Notes History"])
+    daily_tab, monthly_tab, yearly_tab, notes_tab = st.tabs(["Daily", "Monthly", "Yearly", "Notes History"])
 
     with daily_tab:
         chart_rows = [
@@ -706,29 +755,14 @@ def render_stats() -> None:
             for row in history_rows
         ]
         st.markdown("**Daily target vs achievement**")
-        st.bar_chart(chart_rows, x="Date", y="Value", color="Metric", use_container_width=True)
+        st.line_chart(chart_rows, x="Date", y="Value", color="Metric", use_container_width=True)
         st.markdown("**Daily completion trend**")
         st.line_chart(history_rows, x="Date", y="Completion %", use_container_width=True)
         with st.expander("Daily records"):
             st.dataframe(history_rows, use_container_width=True, hide_index=True)
 
-    with weekly_tab:
-        weekly_rows = aggregate_period(history_rows, "week")
-        weekly_chart = [
-            {"Period": row["Period"], "Metric": "Target", "Value": row["Target"]}
-            for row in weekly_rows
-        ] + [
-            {"Period": row["Period"], "Metric": "Achievement", "Value": row["Achievement"]}
-            for row in weekly_rows
-        ]
-        st.markdown("**Weekly target vs achievement**")
-        st.bar_chart(weekly_chart, x="Period", y="Value", color="Metric", use_container_width=True)
-        st.markdown("**Weekly completion trend**")
-        st.line_chart(weekly_rows, x="Period", y="Completion %", use_container_width=True)
-        st.dataframe(weekly_rows, use_container_width=True, hide_index=True)
-
     with monthly_tab:
-        monthly_rows = aggregate_period(history_rows, "month")
+        monthly_rows = state.get("period_records", {}).get("monthly") or aggregate_period(history_rows, "month")
         monthly_chart = [
             {"Period": row["Period"], "Metric": "Target", "Value": row["Target"]}
             for row in monthly_rows
@@ -737,10 +771,25 @@ def render_stats() -> None:
             for row in monthly_rows
         ]
         st.markdown("**Monthly target vs achievement**")
-        st.bar_chart(monthly_chart, x="Period", y="Value", color="Metric", use_container_width=True)
+        st.line_chart(monthly_chart, x="Period", y="Value", color="Metric", use_container_width=True)
         st.markdown("**Monthly completion trend**")
         st.line_chart(monthly_rows, x="Period", y="Completion %", use_container_width=True)
         st.dataframe(monthly_rows, use_container_width=True, hide_index=True)
+
+    with yearly_tab:
+        yearly_rows = state.get("period_records", {}).get("yearly") or aggregate_period(history_rows, "year")
+        yearly_chart = [
+            {"Period": row["Period"], "Metric": "Target", "Value": row["Target"]}
+            for row in yearly_rows
+        ] + [
+            {"Period": row["Period"], "Metric": "Achievement", "Value": row["Achievement"]}
+            for row in yearly_rows
+        ]
+        st.markdown("**Yearly target vs achievement**")
+        st.line_chart(yearly_chart, x="Period", y="Value", color="Metric", use_container_width=True)
+        st.markdown("**Yearly completion trend**")
+        st.line_chart(yearly_rows, x="Period", y="Completion %", use_container_width=True)
+        st.dataframe(yearly_rows, use_container_width=True, hide_index=True)
 
     with notes_tab:
         notes = note_history_rows(state)
