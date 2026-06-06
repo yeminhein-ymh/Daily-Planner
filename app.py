@@ -273,6 +273,16 @@ def delete_item(collection: str, item_id: str) -> None:
     save_state()
 
 
+def delete_goal(goal_id: str) -> None:
+    state = st.session_state["app_state"]
+    state["goals"] = [goal for goal in state["goals"] if goal["id"] != goal_id]
+    state["tasks"] = [task for task in state["tasks"] if task.get("goal_id") != goal_id]
+    state["habits"] = [habit for habit in state["habits"] if habit.get("goal_id") != goal_id]
+    state["history"][today_key()] = daily_summary(state)
+    update_period_records(state)
+    save_state()
+
+
 def load_starter_template() -> None:
     state = starter_state()
     state["user_email"] = st.session_state.get("user_email", "")
@@ -864,6 +874,15 @@ def render_goals() -> None:
             """,
             unsafe_allow_html=True,
         )
+        with st.expander("Delete goal"):
+            st.warning(f"This will delete this goal plus {len(tasks)} linked tasks and {len(habits)} linked habits.")
+            confirm = st.checkbox(
+                "I understand this will remove this goal and its linked items.",
+                key=f"confirm_delete_goal_{goal['id']}",
+            )
+            if st.button("Delete goal", key=f"delete_goal_{goal['id']}", type="secondary", disabled=not confirm):
+                delete_goal(goal["id"])
+                st.rerun()
 
 
 def render_stats() -> None:
