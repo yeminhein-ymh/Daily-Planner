@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 from uuid import uuid4
 
+import altair as alt
 import streamlit as st
 
 try:
@@ -347,6 +348,31 @@ def note_history_rows(state: dict) -> list[dict]:
         if str(note).strip():
             rows.append({"Date": note_date, "Daily Note": note})
     return rows
+
+
+def target_achievement_chart(rows: list[dict], x_field: str, title: str):
+    tooltip = [
+        alt.Tooltip(f"{x_field}:N", title=x_field),
+        alt.Tooltip("Target:Q"),
+        alt.Tooltip("Achievement:Q"),
+        alt.Tooltip("Completion %:Q"),
+    ]
+    base = alt.Chart(alt.Data(values=rows)).encode(
+        x=alt.X(f"{x_field}:N", title=None, sort=None, axis=alt.Axis(labelAngle=-45)),
+    )
+    bars = base.mark_bar(color="#1f6f8b", opacity=0.9).encode(
+        y=alt.Y("Target:Q", title="Target"),
+        tooltip=tooltip,
+    )
+    line = base.mark_line(color="#f26d2d", point=True, strokeWidth=3).encode(
+        y=alt.Y("Achievement:Q", title="Achievement"),
+        tooltip=tooltip,
+    )
+    return (
+        alt.layer(bars, line)
+        .resolve_scale(y="independent")
+        .properties(title=title, height=320)
+    )
 
 
 def streak_count(item: dict) -> int:
@@ -744,34 +770,55 @@ def render_stats() -> None:
     st.caption(f"Average completion: {average_completion}% · Records are saved as daily, monthly, and yearly summaries.")
 
     st.write("")
-    daily_tab, monthly_tab, yearly_tab, notes_tab = st.tabs(["Daily", "Monthly", "Yearly", "Notes History"])
+    daily_tab, weekly_tab, monthly_tab, yearly_tab, notes_tab = st.tabs(["Daily", "Weekly", "Monthly", "Yearly", "Notes History"])
 
     with daily_tab:
         chart_rows = [
-            {"Date": row["Date"], "Metric": "Target", "Value": row["Target"]}
-            for row in history_rows
-        ] + [
-            {"Date": row["Date"], "Metric": "Achievement", "Value": row["Achievement"]}
+            {
+                "Date": row["Date"],
+                "Target": row["Target"],
+                "Achievement": row["Achievement"],
+                "Completion %": row["Completion %"],
+            }
             for row in history_rows
         ]
         st.markdown("**Daily target vs achievement**")
-        st.line_chart(chart_rows, x="Date", y="Value", color="Metric", use_container_width=True)
+        st.altair_chart(target_achievement_chart(chart_rows, "Date", "Daily Target and Achievement"), use_container_width=True)
         st.markdown("**Daily completion trend**")
         st.line_chart(history_rows, x="Date", y="Completion %", use_container_width=True)
         with st.expander("Daily records"):
             st.dataframe(history_rows, use_container_width=True, hide_index=True)
 
+    with weekly_tab:
+        weekly_rows = aggregate_period(history_rows, "week")
+        weekly_chart = [
+            {
+                "Period": row["Period"],
+                "Target": row["Target"],
+                "Achievement": row["Achievement"],
+                "Completion %": row["Completion %"],
+            }
+            for row in weekly_rows
+        ]
+        st.markdown("**Weekly target vs achievement**")
+        st.altair_chart(target_achievement_chart(weekly_chart, "Period", "Weekly Target and Achievement"), use_container_width=True)
+        st.markdown("**Weekly completion trend**")
+        st.line_chart(weekly_rows, x="Period", y="Completion %", use_container_width=True)
+        st.dataframe(weekly_rows, use_container_width=True, hide_index=True)
+
     with monthly_tab:
         monthly_rows = state.get("period_records", {}).get("monthly") or aggregate_period(history_rows, "month")
         monthly_chart = [
-            {"Period": row["Period"], "Metric": "Target", "Value": row["Target"]}
-            for row in monthly_rows
-        ] + [
-            {"Period": row["Period"], "Metric": "Achievement", "Value": row["Achievement"]}
+            {
+                "Period": row["Period"],
+                "Target": row["Target"],
+                "Achievement": row["Achievement"],
+                "Completion %": row["Completion %"],
+            }
             for row in monthly_rows
         ]
         st.markdown("**Monthly target vs achievement**")
-        st.line_chart(monthly_chart, x="Period", y="Value", color="Metric", use_container_width=True)
+        st.altair_chart(target_achievement_chart(monthly_chart, "Period", "Monthly Target and Achievement"), use_container_width=True)
         st.markdown("**Monthly completion trend**")
         st.line_chart(monthly_rows, x="Period", y="Completion %", use_container_width=True)
         st.dataframe(monthly_rows, use_container_width=True, hide_index=True)
@@ -779,14 +826,16 @@ def render_stats() -> None:
     with yearly_tab:
         yearly_rows = state.get("period_records", {}).get("yearly") or aggregate_period(history_rows, "year")
         yearly_chart = [
-            {"Period": row["Period"], "Metric": "Target", "Value": row["Target"]}
-            for row in yearly_rows
-        ] + [
-            {"Period": row["Period"], "Metric": "Achievement", "Value": row["Achievement"]}
+            {
+                "Period": row["Period"],
+                "Target": row["Target"],
+                "Achievement": row["Achievement"],
+                "Completion %": row["Completion %"],
+            }
             for row in yearly_rows
         ]
         st.markdown("**Yearly target vs achievement**")
-        st.line_chart(yearly_chart, x="Period", y="Value", color="Metric", use_container_width=True)
+        st.altair_chart(target_achievement_chart(yearly_chart, "Period", "Yearly Target and Achievement"), use_container_width=True)
         st.markdown("**Yearly completion trend**")
         st.line_chart(yearly_rows, x="Period", y="Completion %", use_container_width=True)
         st.dataframe(yearly_rows, use_container_width=True, hide_index=True)
