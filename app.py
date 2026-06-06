@@ -52,13 +52,27 @@ def local_file_for_user(email: str | None = None) -> Path:
 
 def default_state() -> dict:
     return {
-        "goals": [
+        "goals": [],
+        "tasks": [],
+        "habits": [],
+        "daily_notes": {},
+        "history": {},
+        "period_records": {"daily": [], "monthly": [], "yearly": []},
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def starter_state() -> dict:
+    state = default_state()
+    state.update(
+        {
+            "goals": [
             {"id": "goal_coursework", "name": "Coursework Reassessment", "color": "#E24B4A", "icon": "📚"},
             {"id": "goal_fitness", "name": "Fitness & Weight Loss", "color": "#1D9E75", "icon": "💪"},
             {"id": "goal_solar", "name": "Solar Tech YouTube", "color": "#BA7517", "icon": "☀️"},
             {"id": "goal_trading", "name": "Stock & Options Trading", "color": "#534AB7", "icon": "📈"},
-        ],
-        "tasks": [
+            ],
+            "tasks": [
             {
                 "id": "task_cw_outline",
                 "title": "Coursework 1 outline & draft",
@@ -86,8 +100,8 @@ def default_state() -> dict:
                 "subtasks": ["Study", "Journal"],
                 "done_dates": [],
             },
-        ],
-        "habits": [
+            ],
+            "habits": [
             {
                 "id": "habit_exercise",
                 "title": "Exercise",
@@ -112,12 +126,10 @@ def default_state() -> dict:
                 "category": "Health",
                 "done_dates": [],
             },
-        ],
-        "daily_notes": {},
-        "history": {},
-        "period_records": {"daily": [], "monthly": [], "yearly": []},
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    }
+            ],
+        }
+    )
+    return state
 
 
 def google_sheet_configured() -> bool:
@@ -250,6 +262,21 @@ def set_done_today(collection: str, item_id: str, done: bool) -> None:
                 dates.discard(today_key())
             item["done_dates"] = sorted(dates)
             break
+    save_state()
+
+
+def delete_item(collection: str, item_id: str) -> None:
+    state = st.session_state["app_state"]
+    state[collection] = [item for item in state[collection] if item["id"] != item_id]
+    state["history"][today_key()] = daily_summary(state)
+    update_period_records(state)
+    save_state()
+
+
+def load_starter_template() -> None:
+    state = starter_state()
+    state["user_email"] = st.session_state.get("user_email", "")
+    st.session_state["app_state"] = state
     save_state()
 
 
@@ -618,47 +645,53 @@ def render_quick_add() -> None:
     with st.expander("Quick add", expanded=False):
         tab_task, tab_habit, tab_goal = st.tabs(["Task", "Habit", "Goal"])
         with tab_task:
-            with st.form("add_task", clear_on_submit=True):
-                title = st.text_input("Task title")
-                goal_label = st.selectbox("Goal", [goal["name"] for goal in state["goals"]])
-                time = st.text_input("Time", placeholder="8:30 PM")
-                note = st.text_area("Note")
-                subtasks = st.text_input("Subtasks", placeholder="Separate with commas")
-                if st.form_submit_button("Add task"):
-                    goal_id = next(goal["id"] for goal in state["goals"] if goal["name"] == goal_label)
-                    state["tasks"].append(
-                        {
-                            "id": new_id("task"),
-                            "title": title.strip() or "Untitled task",
-                            "goal_id": goal_id,
-                            "time": time.strip(),
-                            "note": note.strip(),
-                            "subtasks": [part.strip() for part in subtasks.split(",") if part.strip()],
-                            "done_dates": [],
-                        }
-                    )
-                    save_state()
-                    st.rerun()
+            if not state["goals"]:
+                st.info("Create your first goal before adding tasks.")
+            else:
+                with st.form("add_task", clear_on_submit=True):
+                    title = st.text_input("Task title")
+                    goal_label = st.selectbox("Goal", [goal["name"] for goal in state["goals"]])
+                    time = st.text_input("Time", placeholder="8:30 PM")
+                    note = st.text_area("Note")
+                    subtasks = st.text_input("Subtasks", placeholder="Separate with commas")
+                    if st.form_submit_button("Add task"):
+                        goal_id = next(goal["id"] for goal in state["goals"] if goal["name"] == goal_label)
+                        state["tasks"].append(
+                            {
+                                "id": new_id("task"),
+                                "title": title.strip() or "Untitled task",
+                                "goal_id": goal_id,
+                                "time": time.strip(),
+                                "note": note.strip(),
+                                "subtasks": [part.strip() for part in subtasks.split(",") if part.strip()],
+                                "done_dates": [],
+                            }
+                        )
+                        save_state()
+                        st.rerun()
         with tab_habit:
-            with st.form("add_habit", clear_on_submit=True):
-                title = st.text_input("Habit title")
-                goal_label = st.selectbox("Goal", [goal["name"] for goal in state["goals"]], key="habit_goal")
-                cadence = st.selectbox("Cadence", ["Daily", "Weekdays", "Weekly", "Monthly"])
-                category = st.text_input("Category", placeholder="Health, Focus, Learning")
-                if st.form_submit_button("Add habit"):
-                    goal_id = next(goal["id"] for goal in state["goals"] if goal["name"] == goal_label)
-                    state["habits"].append(
-                        {
-                            "id": new_id("habit"),
-                            "title": title.strip() or "Untitled habit",
-                            "goal_id": goal_id,
-                            "cadence": cadence,
-                            "category": category.strip() or "General",
-                            "done_dates": [],
-                        }
-                    )
-                    save_state()
-                    st.rerun()
+            if not state["goals"]:
+                st.info("Create your first goal before adding habits.")
+            else:
+                with st.form("add_habit", clear_on_submit=True):
+                    title = st.text_input("Habit title")
+                    goal_label = st.selectbox("Goal", [goal["name"] for goal in state["goals"]], key="habit_goal")
+                    cadence = st.selectbox("Cadence", ["Daily", "Weekdays", "Weekly", "Monthly"])
+                    category = st.text_input("Category", placeholder="Health, Focus, Learning")
+                    if st.form_submit_button("Add habit"):
+                        goal_id = next(goal["id"] for goal in state["goals"] if goal["name"] == goal_label)
+                        state["habits"].append(
+                            {
+                                "id": new_id("habit"),
+                                "title": title.strip() or "Untitled habit",
+                                "goal_id": goal_id,
+                                "cadence": cadence,
+                                "category": category.strip() or "General",
+                                "done_dates": [],
+                            }
+                        )
+                        save_state()
+                        st.rerun()
         with tab_goal:
             with st.form("add_goal", clear_on_submit=True):
                 name = st.text_input("Goal name")
@@ -670,7 +703,7 @@ def render_quick_add() -> None:
                     st.rerun()
 
 
-def render_task_card(task: dict, goals: dict, collection: str = "tasks") -> None:
+def render_task_card(task: dict, goals: dict, collection: str = "tasks", allow_delete: bool = False) -> None:
     goal = goals.get(task.get("goal_id"), {"name": "No goal", "color": "#999", "icon": "•"})
     done = is_done_today(task)
     cols = st.columns([0.08, 0.72, 0.2])
@@ -696,9 +729,15 @@ def render_task_card(task: dict, goals: dict, collection: str = "tasks") -> None
             st.caption("Steps: " + " · ".join(task["subtasks"]))
     with cols[2]:
         st.caption("Done today" if done else "Open")
+    if allow_delete:
+        with st.expander("Delete task"):
+            confirm = st.checkbox("I understand this will remove this task from my planner.", key=f"confirm_delete_task_{task['id']}")
+            if st.button("Delete task", key=f"delete_task_{task['id']}", type="secondary", disabled=not confirm):
+                delete_item("tasks", task["id"])
+                st.rerun()
 
 
-def render_habit_card(habit: dict, goals: dict) -> None:
+def render_habit_card(habit: dict, goals: dict, allow_delete: bool = False) -> None:
     goal = goals.get(habit.get("goal_id"), {"name": "No goal", "color": "#999", "icon": "•"})
     done = is_done_today(habit)
     cols = st.columns([0.08, 0.72, 0.2])
@@ -721,6 +760,12 @@ def render_habit_card(habit: dict, goals: dict) -> None:
         )
     with cols[2]:
         st.metric("Streak", streak_count(habit))
+    if allow_delete:
+        with st.expander("Delete habit"):
+            confirm = st.checkbox("I understand this will remove this habit from my planner.", key=f"confirm_delete_habit_{habit['id']}")
+            if st.button("Delete habit", key=f"delete_habit_{habit['id']}", type="secondary", disabled=not confirm):
+                delete_item("habits", habit["id"])
+                st.rerun()
 
 
 def render_today() -> None:
@@ -735,18 +780,31 @@ def render_today() -> None:
 
     render_quick_add()
 
+    if not state["goals"] and not state["tasks"] and not state["habits"]:
+        st.info("Your planner is empty. Create your first goal with Quick add, or load the starter template.")
+        if st.button("Load starter template", use_container_width=True):
+            load_starter_template()
+            st.rerun()
+        return
+
     st.markdown("<div class='section-title'>Today’s tasks</div>", unsafe_allow_html=True)
-    for task in sorted(state["tasks"], key=lambda item: item.get("time") or "99:99"):
-        with st.container(border=False):
-            st.markdown("<div class='card'>", unsafe_allow_html=True)
-            render_task_card(task, goals)
-            st.markdown("</div>", unsafe_allow_html=True)
+    if not state["tasks"]:
+        st.caption("No tasks yet.")
+    else:
+        for task in sorted(state["tasks"], key=lambda item: item.get("time") or "99:99"):
+            with st.container(border=False):
+                st.markdown("<div class='card'>", unsafe_allow_html=True)
+                render_task_card(task, goals)
+                st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='section-title'>Today’s habits</div>", unsafe_allow_html=True)
-    for habit in state["habits"]:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        render_habit_card(habit, goals)
-        st.markdown("</div>", unsafe_allow_html=True)
+    if not state["habits"]:
+        st.caption("No habits yet.")
+    else:
+        for habit in state["habits"]:
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            render_habit_card(habit, goals)
+            st.markdown("</div>", unsafe_allow_html=True)
 
     note = st.text_area("Daily note", value=state["daily_notes"].get(today_key(), ""), placeholder="What worked today? What got in the way?")
     if st.button("Save daily note", use_container_width=True):
@@ -760,9 +818,12 @@ def render_tasks() -> None:
     state = st.session_state["app_state"]
     goals = goal_map(state)
     render_quick_add()
+    if not state["tasks"]:
+        st.info("No tasks yet. Add one from Quick add.")
+        return
     for task in state["tasks"]:
         st.markdown("<div class='card'>", unsafe_allow_html=True)
-        render_task_card(task, goals)
+        render_task_card(task, goals, allow_delete=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -770,15 +831,21 @@ def render_habits() -> None:
     state = st.session_state["app_state"]
     goals = goal_map(state)
     render_quick_add()
+    if not state["habits"]:
+        st.info("No habits yet. Add one from Quick add.")
+        return
     for habit in state["habits"]:
         st.markdown("<div class='card'>", unsafe_allow_html=True)
-        render_habit_card(habit, goals)
+        render_habit_card(habit, goals, allow_delete=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_goals() -> None:
     state = st.session_state["app_state"]
     render_quick_add()
+    if not state["goals"]:
+        st.info("No goals yet. Add your first goal from Quick add.")
+        return
     for goal in state["goals"]:
         tasks = [task for task in state["tasks"] if task.get("goal_id") == goal["id"]]
         habits = [habit for habit in state["habits"] if habit.get("goal_id") == goal["id"]]
