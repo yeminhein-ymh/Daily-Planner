@@ -52,9 +52,36 @@ def local_file_for_user(email: str | None = None) -> Path:
 
 def default_state() -> dict:
     return {
-        "goals": [],
+        "goals": [
+            {"id": "goal_daily_habits", "name": "Daily Habits", "color": "#1D9E75", "icon": "✅"},
+        ],
         "tasks": [],
-        "habits": [],
+        "habits": [
+            {
+                "id": "habit_exercise",
+                "title": "Exercise",
+                "goal_id": "goal_daily_habits",
+                "cadence": "Daily",
+                "category": "Health",
+                "done_dates": [],
+            },
+            {
+                "id": "habit_water",
+                "title": "Drink enough water",
+                "goal_id": "goal_daily_habits",
+                "cadence": "Daily",
+                "category": "Health",
+                "done_dates": [],
+            },
+            {
+                "id": "habit_read_book",
+                "title": "Read 10 pages of book",
+                "goal_id": "goal_daily_habits",
+                "cadence": "Daily",
+                "category": "Learning",
+                "done_dates": [],
+            },
+        ],
         "daily_notes": {},
         "history": {},
         "period_records": {"daily": [], "monthly": [], "yearly": []},
