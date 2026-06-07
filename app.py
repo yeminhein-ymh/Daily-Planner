@@ -6,6 +6,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import altair as alt
 import streamlit as st
@@ -23,10 +24,28 @@ LOCAL_FILE = Path(__file__).with_name("done_app_state.json")
 SHEET_TAB = "done_app_state"
 GOOGLE_CALENDAR_URL = "https://calendar.google.com/calendar/u/0/r"
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+APP_TIMEZONE = ZoneInfo("Asia/Singapore")
 
 
 def today_key() -> str:
-    return date.today().isoformat()
+    return selected_record_date().isoformat()
+
+
+def actual_today() -> date:
+    return datetime.now(APP_TIMEZONE).date()
+
+
+def actual_today_key() -> str:
+    return actual_today().isoformat()
+
+
+def selected_record_date() -> date:
+    value = st.session_state.get("record_date", actual_today())
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return actual_today()
 
 
 def new_id(prefix: str) -> str:
@@ -337,13 +356,14 @@ def daily_summary_for_date(state: dict, summary_date: date) -> dict:
 
 
 def daily_summary(state: dict) -> dict:
-    return daily_summary_for_date(state, date.today())
+    return daily_summary_for_date(state, selected_record_date())
 
 
 def all_record_dates(state: dict) -> list[str]:
     dates = set(state.get("history", {}).keys())
     dates.add(today_key())
-    dates.add((date.today() - timedelta(days=1)).isoformat())
+    dates.add(actual_today_key())
+    dates.add((actual_today() - timedelta(days=1)).isoformat())
     dates.update(state.get("daily_notes", {}).keys())
     for task in state.get("tasks", []):
         dates.update(task.get("done_dates", []))
@@ -361,16 +381,16 @@ def history_rows_from_state(state: dict) -> list[dict]:
             continue
         saved = state.get("history", {}).get(day, {})
         target = saved.get("item_total", computed["item_total"])
-        achievement = computed["done_total"] if computed["done_total"] or day == today_key() else saved.get("done_total", 0)
+        achievement = computed["done_total"] if computed["done_total"] or day == today_key() or day == actual_today_key() else saved.get("done_total", 0)
         rows.append(
             {
                 "Date": day,
                 "Target": target,
                 "Achievement": achievement,
                 "Completion %": round((achievement / target) * 100) if target else 0,
-                "Tasks Done": computed["tasks_done"] if computed["tasks_done"] or day == today_key() else saved.get("tasks_done", 0),
+                "Tasks Done": computed["tasks_done"] if computed["tasks_done"] or day == today_key() or day == actual_today_key() else saved.get("tasks_done", 0),
                 "Tasks Target": saved.get("tasks_total", computed["tasks_total"]),
-                "Habits Done": computed["habits_done"] if computed["habits_done"] or day == today_key() else saved.get("habits_done", 0),
+                "Habits Done": computed["habits_done"] if computed["habits_done"] or day == today_key() or day == actual_today_key() else saved.get("habits_done", 0),
                 "Habits Target": saved.get("habits_total", computed["habits_total"]),
                 "Daily Note": state.get("daily_notes", {}).get(day, ""),
             }
@@ -467,7 +487,7 @@ def target_achievement_chart(rows: list[dict], x_field: str, title: str):
 
 def streak_count(item: dict) -> int:
     done_dates = set(item.get("done_dates", []))
-    current = date.today()
+    current = actual_today()
     streak = 0
     while current.isoformat() in done_dates:
         streak += 1
@@ -607,6 +627,10 @@ def inject_css() -> None:
 def init_state() -> None:
     if not st.session_state.get("user_email"):
         return
+    if st.session_state.get("last_actual_today") != actual_today_key():
+        st.session_state["record_date"] = actual_today()
+        st.session_state["last_actual_today"] = actual_today_key()
+    st.session_state.setdefault("record_date", actual_today())
     if st.session_state.get("loaded_user_email") != st.session_state.get("user_email"):
         state, backend, error = load_state()
         st.session_state["app_state"] = state
@@ -658,7 +682,8 @@ def render_header() -> None:
             <div class="muted">
                 Storage: <strong>{st.session_state.get("storage_backend", "Local JSON")}</strong><br>
                 User: <strong>{st.session_state.get("user_email", "")}</strong><br>
-                Today: <strong>{summary["done_total"]}/{summary["item_total"]}</strong> done
+                Date: <strong>{selected_record_date().strftime("%d %b %Y")}</strong><br>
+                Done: <strong>{summary["done_total"]}/{summary["item_total"]}</strong>
             </div>
         </div>
         """,
@@ -808,9 +833,22 @@ def render_habit_card(habit: dict, goals: dict, allow_delete: bool = False) -> N
 def render_today() -> None:
     state = st.session_state["app_state"]
     goals = goal_map(state)
+    selected_date = st.date_input(
+        "Record date",
+        value=selected_record_date(),
+        help="Choose today or a previous date to edit tasks, habits, and daily notes.",
+    )
+    if selected_date != selected_record_date():
+        st.session_state["record_date"] = selected_date
+        st.rerun()
+    date_label = selected_record_date().strftime("%A, %d %b %Y")
+    if selected_record_date() == actual_today():
+        st.caption(f"Editing today: {date_label}")
+    else:
+        st.caption(f"Editing previous date: {date_label}")
     summary = daily_summary(state)
     cols = st.columns(4)
-    cols[0].metric("Today done", f"{summary['done_total']}/{summary['item_total']}")
+    cols[0].metric("Selected date done", f"{summary['done_total']}/{summary['item_total']}")
     cols[1].metric("Progress", f"{summary['percent']}%")
     cols[2].metric("Tasks", f"{summary['tasks_done']}/{summary['tasks_total']}")
     cols[3].metric("Habits", f"{summary['habits_done']}/{summary['habits_total']}")
@@ -927,7 +965,7 @@ def render_stats() -> None:
         return
 
     latest = history_rows[-1]
-    yesterday_key = (date.today() - timedelta(days=1)).isoformat()
+    yesterday_key = (actual_today() - timedelta(days=1)).isoformat()
     yesterday = next((row for row in history_rows if row["Date"] == yesterday_key), None)
     average_completion = round(sum(row["Completion %"] for row in history_rows) / len(history_rows))
     cols = st.columns(4)
@@ -1030,14 +1068,14 @@ def render_calendar() -> None:
     st.caption("View your planned tasks and habits by week, then open or add items to Google Calendar.")
 
     top_cols = st.columns([0.45, 0.25, 0.3])
-    selected_day = top_cols[0].date_input("Week of", value=date.today())
+    selected_day = top_cols[0].date_input("Week of", value=actual_today())
     top_cols[1].link_button("Open Google Calendar", GOOGLE_CALENDAR_URL, use_container_width=True)
     top_cols[2].caption("Links create 1-hour Google Calendar events using each item's planned time.")
 
     st.write("")
     for day in week_dates(selected_day):
         day_items = planned_items_for_day(state, day)
-        with st.expander(f"{day.strftime('%A, %d %b')} · {len(day_items)} items", expanded=(day == date.today())):
+        with st.expander(f"{day.strftime('%A, %d %b')} · {len(day_items)} items", expanded=(day == actual_today())):
             if not day_items:
                 st.caption("No items planned.")
             for item in day_items:
@@ -1057,7 +1095,7 @@ def render_calendar() -> None:
                     unsafe_allow_html=True,
                 )
                 cols[2].link_button("Add event", item["url"], use_container_width=True)
-                if day == date.today():
+                if day == actual_today():
                     cols[3].caption("Track in Today")
                 else:
                     cols[3].caption(day.strftime("%a"))
@@ -1085,7 +1123,7 @@ def render_settings() -> None:
         st.success("Saved.")
         st.rerun()
     if st.button("Sign out", use_container_width=True):
-        for key in ["user_email", "loaded_user_email", "app_state", "view"]:
+        for key in ["user_email", "loaded_user_email", "app_state", "view", "record_date", "last_actual_today"]:
             st.session_state.pop(key, None)
         st.rerun()
 
