@@ -102,6 +102,7 @@ def default_state() -> dict:
             },
         ],
         "daily_notes": {},
+        "daily_snapshots": {},
         "history": {},
         "period_records": {"daily": [], "monthly": [], "yearly": []},
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -242,7 +243,7 @@ def save_to_sheet(state: dict) -> bool:
 
 def merge_state(saved: dict) -> dict:
     state = default_state()
-    for key in ["goals", "tasks", "habits", "daily_notes", "history", "period_records", "updated_at"]:
+    for key in ["goals", "tasks", "habits", "daily_notes", "daily_snapshots", "history", "period_records", "updated_at"]:
         if key in saved:
             state[key] = saved[key]
     return state
@@ -270,6 +271,8 @@ def load_state() -> tuple[dict, str, str]:
 def save_state() -> None:
     state = st.session_state["app_state"]
     state["history"][today_key()] = daily_summary(state)
+    save_daily_snapshot(state, selected_record_date())
+    save_daily_snapshot(state, actual_today())
     update_period_records(state)
     try:
         if save_to_sheet(state):
@@ -359,12 +362,61 @@ def daily_summary(state: dict) -> dict:
     return daily_summary_for_date(state, selected_record_date())
 
 
+def daily_snapshot_for_date(state: dict, snapshot_date: date) -> dict:
+    day = snapshot_date.isoformat()
+    goals = goal_map(state)
+    tasks = []
+    for task in state.get("tasks", []):
+        goal = goals.get(task.get("goal_id"), {"name": "No goal"})
+        tasks.append(
+            {
+                "title": task.get("title", ""),
+                "goal": goal.get("name", "No goal"),
+                "time": task.get("time", ""),
+                "note": task.get("note", ""),
+                "subtasks": task.get("subtasks", []),
+                "done": day in task.get("done_dates", []),
+            }
+        )
+    habits = []
+    for habit in state.get("habits", []):
+        goal = goals.get(habit.get("goal_id"), {"name": "No goal"})
+        habits.append(
+            {
+                "title": habit.get("title", ""),
+                "goal": goal.get("name", "No goal"),
+                "cadence": habit.get("cadence", ""),
+                "category": habit.get("category", ""),
+                "done": day in habit.get("done_dates", []),
+            }
+        )
+    return {
+        "date": day,
+        "summary": daily_summary_for_date(state, snapshot_date),
+        "goals": [
+            {"name": goal.get("name", ""), "icon": goal.get("icon", ""), "color": goal.get("color", "")}
+            for goal in state.get("goals", [])
+        ],
+        "tasks": tasks,
+        "habits": habits,
+        "daily_note": state.get("daily_notes", {}).get(day, ""),
+        "saved_at": datetime.now(APP_TIMEZONE).isoformat(timespec="seconds"),
+    }
+
+
+def save_daily_snapshot(state: dict, snapshot_date: date | None = None) -> None:
+    snapshot_date = snapshot_date or selected_record_date()
+    state.setdefault("daily_snapshots", {})
+    state["daily_snapshots"][snapshot_date.isoformat()] = daily_snapshot_for_date(state, snapshot_date)
+
+
 def all_record_dates(state: dict) -> list[str]:
     dates = set(state.get("history", {}).keys())
     dates.add(today_key())
     dates.add(actual_today_key())
     dates.add((actual_today() - timedelta(days=1)).isoformat())
     dates.update(state.get("daily_notes", {}).keys())
+    dates.update(state.get("daily_snapshots", {}).keys())
     for task in state.get("tasks", []):
         dates.update(task.get("done_dates", []))
     for habit in state.get("habits", []):
@@ -483,6 +535,49 @@ def target_achievement_chart(rows: list[dict], x_field: str, title: str):
         .resolve_scale(y="independent")
         .properties(title=title, height=320)
     )
+
+
+def render_daily_snapshot_lookup(state: dict) -> None:
+    snapshots = state.get("daily_snapshots", {})
+    if not snapshots:
+        st.info("No detailed daily snapshots saved yet. Save today's record once to create one.")
+        return
+
+    dates = sorted(snapshots.keys(), reverse=True)
+    selected_date = st.selectbox("Choose daily record", dates)
+    snapshot = snapshots[selected_date]
+    summary = snapshot.get("summary", {})
+
+    cols = st.columns(4)
+    cols[0].metric("Achievement", f"{summary.get('done_total', 0)}/{summary.get('item_total', 0)}")
+    cols[1].metric("Completion", f"{summary.get('percent', 0)}%")
+    cols[2].metric("Tasks", f"{summary.get('tasks_done', 0)}/{summary.get('tasks_total', 0)}")
+    cols[3].metric("Habits", f"{summary.get('habits_done', 0)}/{summary.get('habits_total', 0)}")
+
+    st.markdown("**Daily note**")
+    note = snapshot.get("daily_note", "")
+    st.write(note if note else "No note saved for this date.")
+
+    st.markdown("**Goals on this date**")
+    goals = snapshot.get("goals", [])
+    if goals:
+        st.dataframe(goals, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No goals saved for this date.")
+
+    st.markdown("**Tasks on this date**")
+    tasks = snapshot.get("tasks", [])
+    if tasks:
+        st.dataframe(tasks, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No tasks saved for this date.")
+
+    st.markdown("**Habits on this date**")
+    habits = snapshot.get("habits", [])
+    if habits:
+        st.dataframe(habits, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No habits saved for this date.")
 
 
 def streak_count(item: dict) -> int:
@@ -887,6 +982,11 @@ def render_today() -> None:
         save_state()
         st.success("Daily note saved.")
         st.rerun()
+    if st.button("Save full daily record", use_container_width=True):
+        state["daily_notes"][today_key()] = note
+        save_state()
+        st.success("Full daily record saved for this date.")
+        st.rerun()
 
 
 def render_tasks() -> None:
@@ -982,6 +1082,9 @@ def render_stats() -> None:
     daily_tab, weekly_tab, monthly_tab, yearly_tab, notes_tab = st.tabs(["Daily", "Weekly", "Monthly", "Yearly", "Notes History"])
 
     with daily_tab:
+        st.markdown("**Daily record lookup**")
+        render_daily_snapshot_lookup(state)
+        st.divider()
         chart_rows = [
             {
                 "Date": row["Date"],
