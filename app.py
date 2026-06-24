@@ -82,6 +82,7 @@ def default_state() -> dict:
                 "goal_id": "goal_daily_habits",
                 "cadence": "Daily",
                 "category": "Health",
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
             {
@@ -90,6 +91,7 @@ def default_state() -> dict:
                 "goal_id": "goal_daily_habits",
                 "cadence": "Daily",
                 "category": "Health",
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
             {
@@ -98,13 +100,14 @@ def default_state() -> dict:
                 "goal_id": "goal_daily_habits",
                 "cadence": "Daily",
                 "category": "Learning",
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
         ],
         "daily_notes": {},
         "daily_snapshots": {},
         "history": {},
-        "period_records": {"daily": [], "monthly": [], "yearly": []},
+        "period_records": {"daily": [], "weekly": [], "monthly": [], "yearly": []},
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -127,6 +130,7 @@ def starter_state() -> dict:
                 "time": "8:30 PM",
                 "note": "Focus block: 8:30-10:00 PM",
                 "subtasks": ["Outline", "Draft", "Review"],
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
             {
@@ -136,6 +140,7 @@ def starter_state() -> dict:
                 "time": "8:30 PM",
                 "note": "Keep it short and practical.",
                 "subtasks": ["Hook", "3 talking points", "CTA"],
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
             {
@@ -145,6 +150,7 @@ def starter_state() -> dict:
                 "time": "8:30 PM",
                 "note": "Log what you learned.",
                 "subtasks": ["Study", "Journal"],
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
             ],
@@ -155,6 +161,7 @@ def starter_state() -> dict:
                 "goal_id": "goal_fitness",
                 "cadence": "Daily",
                 "category": "Health",
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
             {
@@ -163,6 +170,7 @@ def starter_state() -> dict:
                 "goal_id": "goal_coursework",
                 "cadence": "Weekdays",
                 "category": "Focus",
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
             {
@@ -171,6 +179,7 @@ def starter_state() -> dict:
                 "goal_id": "goal_fitness",
                 "cadence": "Daily",
                 "category": "Health",
+                "start_date": actual_today_key(),
                 "done_dates": [],
             },
             ],
@@ -300,6 +309,42 @@ def is_done_today(item: dict) -> bool:
     return today_key() in item.get("done_dates", [])
 
 
+def item_start_date(item: dict) -> date:
+    value = item.get("start_date")
+    if value:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    return date(1900, 1, 1)
+
+
+def is_task_active_on(task: dict, day: date) -> bool:
+    return day >= item_start_date(task)
+
+
+def is_habit_due_on(habit: dict, day: date) -> bool:
+    if day < item_start_date(habit):
+        return False
+    cadence = habit.get("cadence", "Daily")
+    if cadence == "Daily":
+        return True
+    if cadence == "Weekdays":
+        return day.weekday() < 5
+    if cadence == "Weekly":
+        return day.weekday() == item_start_date(habit).weekday()
+    if cadence == "Monthly":
+        return day.day == item_start_date(habit).day
+    return True
+
+
+def save_daily_note_from_widget(note_day: str, widget_key: str) -> None:
+    state = st.session_state["app_state"]
+    state.setdefault("daily_notes", {})
+    state["daily_notes"][note_day] = st.session_state.get(widget_key, "")
+    save_state()
+
+
 def set_done_today(collection: str, item_id: str, done: bool) -> None:
     state = st.session_state["app_state"]
     for item in state[collection]:
@@ -341,16 +386,18 @@ def load_starter_template() -> None:
 
 def daily_summary_for_date(state: dict, summary_date: date) -> dict:
     day = summary_date.isoformat()
-    tasks_done = sum(1 for task in state["tasks"] if day in task.get("done_dates", []))
-    habits_done = sum(1 for habit in state["habits"] if day in habit.get("done_dates", []))
-    total = len(state["tasks"]) + len(state["habits"])
+    active_tasks = [task for task in state["tasks"] if is_task_active_on(task, summary_date)]
+    due_habits = [habit for habit in state["habits"] if is_habit_due_on(habit, summary_date)]
+    tasks_done = sum(1 for task in active_tasks if day in task.get("done_dates", []))
+    habits_done = sum(1 for habit in due_habits if day in habit.get("done_dates", []))
+    total = len(active_tasks) + len(due_habits)
     done = tasks_done + habits_done
     return {
         "date": day,
         "tasks_done": tasks_done,
-        "tasks_total": len(state["tasks"]),
+        "tasks_total": len(active_tasks),
         "habits_done": habits_done,
-        "habits_total": len(state["habits"]),
+        "habits_total": len(due_habits),
         "done_total": done,
         "item_total": total,
         "percent": round((done / total) * 100) if total else 0,
@@ -367,6 +414,8 @@ def daily_snapshot_for_date(state: dict, snapshot_date: date) -> dict:
     goals = goal_map(state)
     tasks = []
     for task in state.get("tasks", []):
+        if not is_task_active_on(task, snapshot_date):
+            continue
         goal = goals.get(task.get("goal_id"), {"name": "No goal"})
         tasks.append(
             {
@@ -380,6 +429,8 @@ def daily_snapshot_for_date(state: dict, snapshot_date: date) -> dict:
         )
     habits = []
     for habit in state.get("habits", []):
+        if not is_habit_due_on(habit, snapshot_date):
+            continue
         goal = goals.get(habit.get("goal_id"), {"name": "No goal"})
         habits.append(
             {
@@ -499,6 +550,7 @@ def update_period_records(state: dict) -> None:
     daily_rows = history_rows_from_state(state)
     state["period_records"] = {
         "daily": daily_rows,
+        "weekly": aggregate_period(daily_rows, "week"),
         "monthly": aggregate_period(daily_rows, "month"),
         "yearly": aggregate_period(daily_rows, "year"),
     }
@@ -621,9 +673,10 @@ def week_dates(anchor: date) -> list[date]:
 
 
 def planned_items_for_day(state: dict, day: date) -> list[dict]:
-    weekday = day.weekday()
     items = []
     for task in state["tasks"]:
+        if not is_task_active_on(task, day):
+            continue
         items.append(
             {
                 "type": "Task",
@@ -637,19 +690,19 @@ def planned_items_for_day(state: dict, day: date) -> list[dict]:
         )
     for habit in state["habits"]:
         cadence = habit.get("cadence", "Daily")
-        should_show = cadence == "Daily" or (cadence == "Weekdays" and weekday < 5) or cadence in {"Weekly", "Monthly"}
-        if should_show:
-            items.append(
-                {
-                    "type": "Habit",
-                    "title": habit["title"],
-                    "goal_id": habit.get("goal_id"),
-                    "time": "6:00 AM" if "exercise" in habit["title"].lower() else "8:30 PM",
-                    "note": f"{cadence} habit",
-                    "done": day.isoformat() in habit.get("done_dates", []),
-                    "url": google_calendar_event_url(habit["title"], day, "6:00 AM" if "exercise" in habit["title"].lower() else "8:30 PM", f"{cadence} habit"),
-                }
-            )
+        if not is_habit_due_on(habit, day):
+            continue
+        items.append(
+            {
+                "type": "Habit",
+                "title": habit["title"],
+                "goal_id": habit.get("goal_id"),
+                "time": "6:00 AM" if "exercise" in habit["title"].lower() else "8:30 PM",
+                "note": f"{cadence} habit",
+                "done": day.isoformat() in habit.get("done_dates", []),
+                "url": google_calendar_event_url(habit["title"], day, "6:00 AM" if "exercise" in habit["title"].lower() else "8:30 PM", f"{cadence} habit"),
+            }
+        )
     return sorted(items, key=lambda item: parse_task_time(item["time"]))
 
 
@@ -821,6 +874,7 @@ def render_quick_add() -> None:
                                 "time": time.strip(),
                                 "note": note.strip(),
                                 "subtasks": [part.strip() for part in subtasks.split(",") if part.strip()],
+                                "start_date": today_key(),
                                 "done_dates": [],
                             }
                         )
@@ -844,6 +898,7 @@ def render_quick_add() -> None:
                                 "goal_id": goal_id,
                                 "cadence": cadence,
                                 "category": category.strip() or "General",
+                                "start_date": today_key(),
                                 "done_dates": [],
                             }
                         )
@@ -942,6 +997,8 @@ def render_today() -> None:
     else:
         st.caption(f"Editing previous date: {date_label}")
     summary = daily_summary(state)
+    active_tasks = [task for task in state["tasks"] if is_task_active_on(task, selected_record_date())]
+    due_habits = [habit for habit in state["habits"] if is_habit_due_on(habit, selected_record_date())]
     cols = st.columns(4)
     cols[0].metric("Selected date done", f"{summary['done_total']}/{summary['item_total']}")
     cols[1].metric("Progress", f"{summary['percent']}%")
@@ -958,32 +1015,43 @@ def render_today() -> None:
         return
 
     st.markdown("<div class='section-title'>Today’s tasks</div>", unsafe_allow_html=True)
-    if not state["tasks"]:
+    if not active_tasks:
         st.caption("No tasks yet.")
     else:
-        for task in sorted(state["tasks"], key=lambda item: item.get("time") or "99:99"):
+        for task in sorted(active_tasks, key=lambda item: item.get("time") or "99:99"):
             with st.container(border=False):
                 st.markdown("<div class='card'>", unsafe_allow_html=True)
                 render_task_card(task, goals)
                 st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='section-title'>Today’s habits</div>", unsafe_allow_html=True)
-    if not state["habits"]:
+    if not due_habits:
         st.caption("No habits yet.")
     else:
-        for habit in state["habits"]:
+        for habit in due_habits:
             st.markdown("<div class='card'>", unsafe_allow_html=True)
             render_habit_card(habit, goals)
             st.markdown("</div>", unsafe_allow_html=True)
 
-    note = st.text_area("Daily note", value=state["daily_notes"].get(today_key(), ""), placeholder="What worked today? What got in the way?")
+    note_day = today_key()
+    note_key = f"daily_note_input_{note_day}"
+    if note_key not in st.session_state:
+        st.session_state[note_key] = state["daily_notes"].get(note_day, "")
+    st.text_area(
+        "Daily note",
+        key=note_key,
+        placeholder="What worked today? What got in the way?",
+        on_change=save_daily_note_from_widget,
+        args=(note_day, note_key),
+    )
+    note = st.session_state.get(note_key, "")
     if st.button("Save daily note", use_container_width=True):
-        state["daily_notes"][today_key()] = note
+        state["daily_notes"][note_day] = note
         save_state()
         st.success("Daily note saved.")
         st.rerun()
     if st.button("Save full daily record", use_container_width=True):
-        state["daily_notes"][today_key()] = note
+        state["daily_notes"][note_day] = note
         save_state()
         st.success("Full daily record saved for this date.")
         st.rerun()
